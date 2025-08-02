@@ -2,6 +2,8 @@ import os
 import json
 from dotenv import load_dotenv
 from stravalib.client import Client
+import requests
+import math
 
 load_dotenv()
 
@@ -84,6 +86,119 @@ def extract_route_and_elevation(activity, client):
     elevation_gain = activity.total_elevation_gain
     return route, elevation_gain
 
+def get_ground_elevations(route):
+    """Fetch ground elevation for each GPS coordinate using the Open-Elevation API."""
+    if not route:
+        return []
+    url = "https://api.open-elevation.com/api/v1/lookup"
+    elevations = []
+    batch_size = 100
+    for i in range(0, len(route), batch_size):
+        batch = route[i:i+batch_size]
+        locations = [{"latitude": lat, "longitude": lon} for lat, lon in batch]
+        response = requests.post(url, json={"locations": locations})
+        if response.status_code == 200:
+            data = response.json()
+            elevations.extend([result["elevation"] for result in data["results"]])
+        else:
+            print(f"Failed to fetch elevations for batch {i//batch_size+1}")
+            elevations.extend([None] * len(batch))
+    return elevations
+
+def get_positive_elevation_gain(elevations):
+    """
+    Calculate the total positive elevation gain from a list of elevations.
+    Args:
+        elevations (list of float): List of elevation values (meters).
+    Returns:
+        float: Total positive elevation gain (meters).
+    """
+    gain = 0.0
+    for prev, curr in zip(elevations, elevations[1:]):
+        if curr is not None and prev is not None and curr > prev:
+            gain += curr - prev
+    return gain
+
+def get_route_start_coords(route):
+    """Get the starting coordinates of the route."""
+    if not route:
+        return None
+    return route[0]
+
+def save_google_static_map(coords, filename="route_start_map.png", zoom=15, size="600x400", maptype="roadmap"):
+    """
+    Fetch and save a Google Static Maps image for the given coordinates.
+    Args:
+        coords (tuple): (latitude, longitude)
+        filename (str): Output image filename
+        zoom (int): Map zoom level
+        size (str): Image size (e.g., '600x400')
+        maptype (str): Map type ('roadmap', 'satellite', etc.)
+    """
+    api_key = os.getenv("GOOGLE_MAPS_API_KEY")
+    if not api_key:
+        print("GOOGLE_MAPS_API_KEY not set in .env file. Please add your Google Maps API key.")
+        return
+    lat, lon = coords
+    url = (
+        f"https://maps.googleapis.com/maps/api/staticmap?center={lat},{lon}"
+        f"&zoom={zoom}&size={size}&maptype={maptype}&markers=color:red%7C{lat},{lon}&key={api_key}"
+    )
+    response = requests.get(url)
+    if response.status_code == 200:
+        with open(filename, "wb") as f:
+            f.write(response.content)
+        print(f"Google Static Map image saved as {filename}")
+    else:
+        print(f"Failed to fetch map image: {response.status_code} {response.text}")
+
+def estimate_mapbox_zoom(lat, map_width_px, ground_width_m):
+    """
+    Estimate the Mapbox zoom level to fit a given ground width (meters) in the map image.
+    Args:
+        lat (float): Latitude in degrees
+        map_width_px (int): Map image width in pixels
+        ground_width_m (float): Desired ground width in meters
+    Returns:
+        float: Estimated zoom level
+    """
+    # 156543.03392 = meters per pixel at zoom 0 at equator
+    meters_per_pixel = ground_width_m / map_width_px
+    zoom = math.log2((156543.03392 * math.cos(math.radians(lat))) / meters_per_pixel)
+    return max(0, min(22, zoom))  # Clamp to Mapbox zoom range
+
+def save_mapbox_static_image(coords, filename="route_start_mapbox.png", zoom=15, bearing=0, pitch=60, width=600, height=400, style="mapbox/satellite-streets-v12"):
+    """
+    Fetch and save a Mapbox Static Image for the given coordinates with 3D terrain and tilt.
+    Args:
+        coords (tuple): (latitude, longitude)
+        filename (str): Output image filename
+        zoom (int): Map zoom level
+        bearing (int): Map rotation in degrees (0 = north up)
+        pitch (int): Tilt angle in degrees (0 = top-down, up to 60)
+        width (int): Image width in pixels
+        height (int): Image height in pixels
+        style (str): Mapbox style (e.g., 'mapbox/satellite-streets-v12')
+    """
+    access_token = os.getenv("MAPBOX_ACCESS_TOKEN")
+    if not access_token:
+        print("MAPBOX_ACCESS_TOKEN not set in .env file. Please add your Mapbox access token.")
+        return
+    lat, lon = coords
+    url = (
+        f"https://api.mapbox.com/styles/v1/{style}/static/"
+        f"pin-l+ff0000({lon},{lat})/"
+        f"{lon},{lat},{zoom},{bearing},{pitch}/"
+        f"{width}x{height}?access_token={access_token}"
+    )
+    response = requests.get(url)
+    if response.status_code == 200:
+        with open(filename, "wb") as f:
+            f.write(response.content)
+        print(f"Mapbox static image saved as {filename}")
+    else:
+        print(f"Failed to fetch Mapbox image: {response.status_code} {response.text}")
+
 if __name__ == "__main__":
     client = get_strava_client()
     athlete = client.get_athlete()
@@ -93,3 +208,15 @@ if __name__ == "__main__":
         print(f"Latest activity: {activity.name} on {activity.start_date}")
         route, elevation_gain = extract_route_and_elevation(activity, client)
         print(f"Route has {len(route)} points. Total elevation gain: {elevation_gain} meters.")
+        if route:
+            elevations = get_ground_elevations(route)
+            positive_gain = get_positive_elevation_gain(elevations)
+            print(f"Computed positive elevation gain from ground elevations: {positive_gain:.2f} meters")
+            start_coords = get_route_start_coords(route)
+            print(f"Route start coordinates: {start_coords}")
+            if start_coords:
+                # save_google_static_map(start_coords, maptype="satellite")
+                lat, lon = start_coords
+                map_width_px = 600
+                zoom = estimate_mapbox_zoom(lat, map_width_px, max(positive_gain, 100))  # Avoid too small
+                save_mapbox_static_image(start_coords, zoom=zoom)

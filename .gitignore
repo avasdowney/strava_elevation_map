@@ -1,9 +1,12 @@
 .env
 strava_token.json
 
+# image files generated
+*.png
+
 # venv
 strava-map
 
 # vibe coding files
-CODING_STANDRDS.md
+CODING_STANDARDS.md
 PLAN.md
