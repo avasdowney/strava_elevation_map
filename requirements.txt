@@ -1,0 +1,8 @@
+stravalib
+python-dotenv
+Pillow
+matplotlib
+geopy
+numpy
+folium
+staticmap

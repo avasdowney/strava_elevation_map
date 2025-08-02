@@ -1,0 +1,9 @@
+.env
+strava_token.json
+
+# venv
+strava-map
+
+# vibe coding files
+CODING_STANDRDS.md
+PLAN.md
